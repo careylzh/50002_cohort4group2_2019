@@ -1,0 +1,292 @@
+module mojo_top (
+    input clk,              // 50MHz clock
+    input rst_n,            // reset button (active low)
+    output led [8],         // 8 user controllable LEDs
+    input cclk,             // configuration clock, AVR ready when high
+    output spi_miso,        // AVR SPI MISO
+    input spi_ss,           // AVR SPI Slave Select
+    input spi_mosi,         // AVR SPI MOSI
+    input spi_sck,          // AVR SPI Clock
+    output spi_channel [4], // AVR general purpose pins (used by default to select ADC channel)
+    input avr_tx,           // AVR TX (FPGA RX)
+    output avr_rx,          // AVR RX (FPGA TX)
+    input avr_rx_busy,      // AVR RX buffer full
+    
+    output io_led [3][8],   // LEDs on IO Shield
+    output io_seg [8],      // 7-segment LEDs on IO Shield
+    output io_sel [4],      // Digit select on IO Shield
+    input io_button [5],    // 5 buttons on IO Shield
+    input io_dip [3][8],     // DIP switches on IO Shield
+    
+    // Outputs: a, b, and cin. 
+    output a,
+    output b,
+    output c,
+    
+    // Inputs: sum and cout.
+    input sum,
+    input carry
+    
+  ) { 
+   
+  sig rst;                  // reset signal
+  
+  .clk(clk) {
+    // Synchronization of the clk and rst
+    reset_conditioner reset_cond;
+
+    fsm state = {IDLE, TEST1, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, TEST8, FAIL, SUCCESS};
+    /*This finite state machine including 11 states
+       IDLE: initial state, with no output, when center button is pressed, enter TEST1 state
+       TEST1 - TEST8: tesing states, when the input sum and carry are the same as the 
+                      preset value, and stateCounter[26] is 1 (indicating around 1.6 sec passed)
+       FAIL: when the input sum or carry is wrong, enter FAIL state
+       SUCC: if all the 8 cases pass, enter SUCC state */
+    
+    .rst(rst) {
+      multi_seven_seg seg;
+      stateCounter sc;
+    }
+  }
+  
+  always {
+
+    reset_cond.in = ~rst_n;   // input raw inverted reset signal
+    rst = reset_cond.out;     // conditioned reset
+       
+    spi_miso = bz;            // not using SPI
+    spi_channel = bzzzz;      // not using flags
+    avr_rx = bz;              // not using serial port
+    led = 3x{8b0};            // switch off all the leds
+    
+    seg.values = {4h0, 4h0, 4h0, 4h0}; // display 0000 on seven segment element
+    
+    io_seg = ~seg.seg; // connect segments to the driver
+    io_sel = ~seg.sel; // connect digit select to the driver
+    
+    io_led[0][2:0] = io_dip[0][2:0];// connect the right most 3 LEDs to the right most 3 dip switches. 
+                                    // this is to show the signal outputs a, b and c visually
+    
+    a = io_dip[0][0];  //connect a, b, c to the right most 3 switches for manual testing
+    b = io_dip[0][1];
+    c = io_dip[0][2];
+    
+    if (io_dip[2][0] == 1){
+    
+    /*This block is for manual testing,
+      when the first dip switch of the middle group is switch on */
+         
+      if ((io_dip[0][0] == 0 & io_dip[0][1] == 0 & io_dip[0][2] == 0)&(sum == 0 & carry == 0)){
+        seg.values = {4h2,4h3,4h4,4h4};    // display "SUCC" for passing cases
+      }
+        else if ((io_dip[0][0] == 0 & io_dip[0][1] == 0 & io_dip[0][2] == 1)&(sum == 1 & carry == 0)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC"
+      }
+        else if ((io_dip[0][0] == 0 & io_dip[0][1] == 1 & io_dip[0][2] == 0)&(sum == 1 & carry == 0)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC"
+      }
+        else if ((io_dip[0][0] == 0 & io_dip[0][1] == 1 & io_dip[0][2] == 1)&(sum == 0 & carry == 1)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC"
+      }
+        else if ((io_dip[0][0] == 1 & io_dip[0][1] == 0 & io_dip[0][2] == 0)&(sum == 1 & carry == 0)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC"
+      }
+        else if ((io_dip[0][0] == 1 & io_dip[0][1] == 0 & io_dip[0][2] == 1)&(sum == 0 & carry == 1)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC"
+      }
+        else if ((io_dip[0][0] == 1 & io_dip[0][1] == 1 & io_dip[0][2] == 0)&(sum == 0 & carry == 1)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC"
+      }
+        else if ((io_dip[0][0] == 1 & io_dip[0][1] == 1 & io_dip[0][2] == 1)&(sum == 1 & carry == 1)){
+        seg.values = {4h2,4h3,4h4,4h4};    // "SUCC" 
+      }
+        else {
+        seg.values = {4h5,4h6,4h7,4h8};// display "FAIL" when sum or carry is wrong
+      }
+    }
+
+    
+    case (state.q) {       
+      state.IDLE: // initial state           
+        if(io_button[1]) {
+          state.d = state.TEST1; // if the centre button is pressed, enter auto testing mode
+        }      
+        
+      state.TEST1:   
+      // output values of a, b and c   
+        a = 0;
+        b = 0;
+        c = 0;      
+        seg.values = {4h0, 4h0, 4h0, 4h0}; // The last three digits of the display will show the input values 
+                                           //of a, b and c
+        
+        /* The following code checks if the outputs of the full-adder sum and carry are correct. 
+        If it is correct go to the next test state, if not, go to FAIL state*/ 
+        if (sum == 0 && carry == 0 && sc.out == 1) {
+          state.d = state.TEST2;
+        }      
+        else if (sum != 0 || carry != 0 && sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        // If the reset button is pressed,  reset the state to IDLE state      
+        if (rst_n == 0) {
+          state.d = state.IDLE;
+        }
+
+      state.TEST2:
+        a = 0;
+        b = 0;
+        c = 1;
+                
+        seg.values = {4h0, 4h0, 4h0, 4h1}; //0001
+                
+        if (sum == 1 & carry == 0 & sc.out == 1) {
+          state.d = state.TEST3;
+        }
+        
+        else if ((sum != 1 | carry != 0) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+        
+      state.TEST3:
+        a = 0;
+        b = 1;
+        c = 0;
+        
+        seg.values = {4h0, 4h0, 4h1, 4h0}; //0010
+        
+        if (sum == 1 & carry == 0 & sc.out == 1) {
+          state.d = state.TEST4;
+        }
+         
+        else if ((sum != 1 | carry != 0) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+        
+      state.TEST4:
+        a = 0;
+        b = 1;
+        c = 1;
+        
+        seg.values = {4h0, 4h0, 4h1, 4h1}; //0011
+        
+        if (sum == 0 & carry == 1 & sc.out == 1) {
+          state.d = state.TEST5;
+        }
+         
+        else if ((sum != 0 | carry != 1) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+     
+
+      state.TEST5:
+        a = 1;
+        b = 0;
+        c = 0;
+        
+        seg.values = {4h0, 4h1, 4h0, 4h0}; //0100
+        
+        if (sum == 1 & carry == 0 & sc.out == 1) {
+          state.d = state.TEST6;
+        }
+         
+        else if ((sum != 1 | carry != 0) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+        
+        
+      state.TEST6:
+        a = 1;
+        b = 0;
+        c = 1;
+        
+        seg.values = {4h0, 4h1, 4h0, 4h1}; //0101
+        
+        if (sum == 0 & carry == 1 & sc.out == 1) {
+          state.d = state.TEST7;
+        }
+         
+        else if ((sum != 0 | carry != 1) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+        
+      state.TEST7:
+        a = 1;
+        b = 1;
+        c = 0;
+        
+
+        seg.values = {4h0, 4h1, 4h1, 4h0}; //0110
+        
+        if (sum == 0 & carry == 1 & sc.out == 1) {
+          state.d = state.TEST8;
+        }
+         
+        else if ((sum != 0 | carry != 1) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+        
+      state.TEST8:
+        a = 1;
+        b = 1;
+        c = 1;
+        
+        seg.values = {4h0, 4h1, 4h1, 4h1}; //0111
+        
+        if (sum == 1 & carry == 1 & sc.out == 1) {
+          state.d = state.SUCCESS;
+        }
+         
+        else if ((sum != 1 | carry != 1) & sc.out == 1) {
+          state.d = state.FAIL;
+        }
+        
+        if(rst_n == 0) {
+          state.d = state.IDLE;
+        }
+            
+      state.FAIL:   // When the output of the full adder sum and carry are wrong, enter FAIL state
+        
+        seg.values = {4h5,4h6,4h7,4h8}; // display "FAIL" on the seven segment element
+        
+        // If reset button is pressed, enter IDLE state
+        if (rst_n == 0) {
+          state.d = state.IDLE;
+        }
+
+      state.SUCCESS:  // When all the 8 cases have passed, enter state SUCCESS
+      
+        seg.values = {4h2,4h3,4h4,4h4}; //Display "SUCC" on the seven segment element
+        
+        // If reset button is pressed, enter IDLE state
+        if (rst_n == 0) {
+          state.d = state.IDLE;
+        }
+      }
+    }
+}
